@@ -4,7 +4,7 @@ boolean isThingsBoardConnected = 0;
 WiFiClient wifiClient;
 Arduino_MQTT_Client mqttClient(wifiClient);
 ThingsBoard thingsboardClient(mqttClient, MAX_MESSAGE_SIZE);
-
+RPC_Response processSetLedStatus(const RPC_Data &data);
 
 WiFiClient getWifiClient(){
     return wifiClient;
