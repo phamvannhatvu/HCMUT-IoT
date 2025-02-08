@@ -1,6 +1,9 @@
 #include <Arduino.h>
 #include <DHT20.h>
-#include <Server_Side_RPC.h>
+#include <ThingsBoard.h>
+#include <Arduino_MQTT_Client.h>
+
+
 
 #include "Thingsboard_Helper.h"
 
@@ -8,6 +11,34 @@
 
 constexpr char WIFI_SSID[] = "abcd";
 constexpr char WIFI_PASSWORD[] = "123456789";
+
+
+constexpr const char RPC_JSON_METHOD[] = "example_json";
+constexpr const char RPC_TEMPERATURE_METHOD[] = "example_set_temperature";
+constexpr const char RPC_SWITCH_METHOD[] = "example_set_switch";
+constexpr const char RPC_TEMPERATURE_KEY[] = "temperature";
+constexpr const char RPC_SWITCH_KEY[] = "switch";
+constexpr uint8_t MAX_RPC_SUBSCRIPTIONS = 3U;
+constexpr uint8_t MAX_RPC_RESPONSE = 5U;
+
+bool subscribed = false;
+
+bool ledState = false;  // LED state
+
+RPC_Response processSetLedStatus(const RPC_Data &data) {
+  // Process the RPC request to change the LED state
+  int dataInt = data;
+  ledState = dataInt == 1;  // Update the LED state based on the received data
+  Serial.println(ledState ? "LED ON" : "LED OFF");
+  return RPC_Response("newStatus", dataInt);  // Respond with the new status
+}
+
+
+// Define the array of RPC callbacks
+const std::array<RPC_Callback, 1U> callbacks = {
+  RPC_Callback{ "setValueLED", processSetLedStatus}
+};
+
 
 
 
@@ -64,12 +95,17 @@ void TaskTemperature_Humidity(void *pvParameters){
     Serial.print(" Humidity: "); Serial.print(humidity); Serial.print(" %");
     Serial.println();
     if(getThingsboardConnectedStatus() == true){
-      Serial.println("Sending temperature data...");
+      //Serial.println("Sending temperature data...");
       getThingsboardClient().sendTelemetryData(TEMPERATURE_KEY, temperature);
 
-      Serial.println("Sending humidity data...");
+      //Serial.println("Sending humidity data...");
       getThingsboardClient().sendTelemetryData(HUMIDITY_KEY, humidity);
 
+    }
+    if (!subscribed){
+      //Serial.println("Fail subscired...");
+    }else{
+      //Serial.println("OK subscired...");
     }
 
     vTaskDelay(5000);
@@ -84,11 +120,25 @@ void setup() {
   initWiFi();
   initThingsBoard();
   
+
+  
+
   xTaskCreate(TaskLEDControl, "LED Control", 2048, NULL, 2, NULL);
   xTaskCreate(TaskTemperature_Humidity, "Temperature Humidity", 2048, NULL, 2, NULL);
   
 }
 
 void loop() {
-  
+  if(getThingsboardConnectedStatus() == true){
+    // Subscribe to RPC callbacks
+    Serial.println("Subscribing for RPC...");
+    if (!getThingsboardClient().RPC_Subscribe(callbacks.cbegin(), callbacks.cend())) {
+      Serial.println("Failed to subscribe for RPC");
+      subscribed = 0;
+    }else{
+      subscribed = 1;
+    }
+  }
+
+  getThingsboardClient().loop();
 }
