@@ -9,10 +9,10 @@
 #include "Wire.h"
 #include <ArduinoOTA.h>
 
-constexpr char WIFI_SSID[] = "abcd";
-constexpr char WIFI_PASSWORD[] = "123456789";
+constexpr char WIFI_SSID[] = "nhatvu";
+constexpr char WIFI_PASSWORD[] = "25122003";
 
-constexpr char TOKEN[] = "7s5pokn2se622pzn1jxu";
+constexpr char TOKEN[] = "tvj7ij6na9cfs2kki3cy"; // IoT Device 1
 
 constexpr char THINGSBOARD_SERVER[] = "app.coreiot.io";
 constexpr uint16_t THINGSBOARD_PORT = 1883U;
@@ -27,14 +27,21 @@ constexpr char LED_STATE_ATTR[] = "ledState";
 volatile bool attributesChanged = false;
 volatile int ledMode = 0;
 volatile bool ledState = false;
+volatile bool wifiConnected = false;
+volatile bool tbConnected = false;
 
 constexpr uint16_t BLINKING_INTERVAL_MS_MIN = 10U;
 constexpr uint16_t BLINKING_INTERVAL_MS_MAX = 60000U;
+constexpr uint16_t WIFI_CONNECT_CHECKING_INTERVAL_MS = 10000U;
+constexpr uint16_t TB_CONNECT_CHECKING_INTERVAL_MS = 10000U;
+constexpr uint16_t ATTRIBUTE_CHANGED_CHECKING_INTERVAL_MS = 10U;
+constexpr uint16_t TB_LOOP_INTERVAL_MS = 10U;
 volatile uint16_t blinkingInterval = 1000U;
 
 uint32_t previousStateChange;
 
 constexpr int16_t telemetrySendInterval = 10000U;
+constexpr int16_t attributeSendInterval = telemetrySendInterval;
 uint32_t previousDataSend;
 
 constexpr std::array<const char *, 2U> SHARED_ATTRIBUTES_LIST = {
@@ -96,35 +103,7 @@ void InitWiFi() {
   Serial.println("Connected to AP");
 }
 
-const bool reconnect() {
-  // Check to ensure we aren't connected yet
-  const wl_status_t status = WiFi.status();
-  if (status == WL_CONNECTED) {
-    return true;
-  }
-  // If we aren't establish a new connection to the given WiFi network
-  InitWiFi();
-  return true;
-}
-
-void setup() {
-  Serial.begin(SERIAL_DEBUG_BAUD);
-  pinMode(LED_PIN, OUTPUT);
-  delay(1000);
-  InitWiFi();
-
-  Wire.begin(SDA_PIN, SCL_PIN);
-  dht20.begin();
-  
-}
-
-void loop() {
-  delay(10);
-
-  if (!reconnect()) {
-    return;
-  }
-
+void CheckTBConnection() {
   if (!tb.connected()) {
     Serial.print("Connecting to: ");
     Serial.print(THINGSBOARD_SERVER);
@@ -155,22 +134,42 @@ void loop() {
       return;
     }
   }
+}
 
-  if (attributesChanged) {
-    attributesChanged = false;
-    tb.sendAttributeData(LED_STATE_ATTR, digitalRead(LED_PIN));
+/* Free RTOS Tasks */
+void TaskCheckWiFiConnection(void *pvParameters) {
+  while(1) {
+    // Check to ensure we aren't connected yet
+    const wl_status_t status = WiFi.status();
+    if (status != WL_CONNECTED) {
+      // If we aren't establish a new connection to the given WiFi network
+      InitWiFi();
+      // Reconnect to ThingsBoard right after reconnect to WiFi
+      CheckTBConnection(); 
+    }
+    vTaskDelay(pdMS_TO_TICKS(WIFI_CONNECT_CHECKING_INTERVAL_MS));
   }
+}
 
-  // if (ledMode == 1 && millis() - previousStateChange > blinkingInterval) {
-  //   previousStateChange = millis();
-  //   digitalWrite(LED_PIN, !digitalRead(LED_PIN));
-  //   Serial.print("LED state changed to: ");
-  //   Serial.println(!digitalRead(LED_PIN));
-  // }
+void TaskCheckTBConnection(void *pvParameters) {
+  while(1) {
+    CheckTBConnection();
+    vTaskDelay(pdMS_TO_TICKS(TB_CONNECT_CHECKING_INTERVAL_MS));
+  }
+}
 
-  if (millis() - previousDataSend > telemetrySendInterval) {
-    previousDataSend = millis();
+void TaskCheckAttributesChanged(void *pvParameters) {
+  while(1) {
+    if (attributesChanged) {
+      attributesChanged = false;
+      tb.sendAttributeData(LED_STATE_ATTR, digitalRead(LED_PIN));
+    }
+    vTaskDelay(pdMS_TO_TICKS(ATTRIBUTE_CHANGED_CHECKING_INTERVAL_MS));
+  }
+}
 
+void TaskReadAndSendTelemetryData(void *pvParameters) {
+  while(1) {
     dht20.read();
     
     float temperature = dht20.getTemperature();
@@ -188,13 +187,45 @@ void loop() {
       tb.sendTelemetryData("temperature", temperature);
       tb.sendTelemetryData("humidity", humidity);
     }
+    vTaskDelay(pdMS_TO_TICKS(telemetrySendInterval));
+  }
+}
 
+void TaskSendAttributeData(void *pvParameters) {
+  while(1) {
     tb.sendAttributeData("rssi", WiFi.RSSI());
     tb.sendAttributeData("channel", WiFi.channel());
     tb.sendAttributeData("bssid", WiFi.BSSIDstr().c_str());
     tb.sendAttributeData("localIp", WiFi.localIP().toString().c_str());
     tb.sendAttributeData("ssid", WiFi.SSID().c_str());
+    vTaskDelay(pdMS_TO_TICKS(attributeSendInterval));
   }
+}
 
-  tb.loop();
+void TaskTBLoop(void *pvParameters) {
+  while (1) {
+    tb.loop();
+    vTaskDelay(pdMS_TO_TICKS(TB_LOOP_INTERVAL_MS));
+  }
+}
+
+void setup() {
+  Serial.begin(SERIAL_DEBUG_BAUD);
+  pinMode(LED_PIN, OUTPUT);
+  delay(1000);
+  InitWiFi();
+
+  Wire.begin(SDA_PIN, SCL_PIN);
+  dht20.begin();
+  
+  xTaskCreate(TaskCheckWiFiConnection, "Check WiFi connection", 2048, NULL, 2, NULL);
+  xTaskCreate(TaskCheckTBConnection, "Check Thingsboard connection", 2048, NULL, 2, NULL);
+  xTaskCreate(TaskCheckAttributesChanged, "Check attributes changed", 2048, NULL, 2, NULL);
+  xTaskCreate(TaskReadAndSendTelemetryData, "Read and send telemetry data", 2048, NULL, 2, NULL);
+  xTaskCreate(TaskSendAttributeData, "Send attribute data", 2048, NULL, 2, NULL);
+  xTaskCreate(TaskTBLoop, "tb.loop()", 2048, NULL, 2, NULL);
+}
+
+void loop() {
+  
 }
