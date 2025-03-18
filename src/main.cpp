@@ -49,6 +49,7 @@ void CheckTBConnection() {
       Serial.println("Failed to connect");
       return;
     }
+    Serial.println("Connect successfully");
   }
 }
 
