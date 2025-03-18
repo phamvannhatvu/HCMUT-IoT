@@ -17,7 +17,7 @@ constexpr uint16_t THINGSBOARD_PORT = 1883U;
 constexpr uint16_t WIFI_CONNECT_CHECKING_INTERVAL_MS = 10000U;
 constexpr uint16_t TB_CONNECT_CHECKING_INTERVAL_MS = 10000U;
 constexpr uint16_t TB_LOOP_INTERVAL_MS = 10U;
-constexpr uint16_t SEND_TELEMETRY_INTERVAL_MS = 10000U;
+constexpr uint16_t SEND_TELEMETRY_INTERVAL_MS = 1000U;
 constexpr uint32_t SERIAL_DEBUG_BAUD = 115200UL;
 constexpr uint16_t MAX_MESSAGE_SIZE = 1024U;
 
@@ -49,7 +49,6 @@ void CheckTBConnection() {
       Serial.println("Failed to connect");
       return;
     }
-    Serial.println("Subscribe done");
   }
 }
 
