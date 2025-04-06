@@ -18,7 +18,7 @@ constexpr uint16_t WIFI_CONNECT_CHECKING_INTERVAL_MS = 10000U;
 constexpr uint16_t TB_CONNECT_CHECKING_INTERVAL_MS = 10000U;
 constexpr uint16_t TB_LOOP_INTERVAL_MS = 10U;
 constexpr uint16_t SEND_TELEMETRY_INTERVAL_MS = 1000U;
-constexpr uint32_t SERIAL_DEBUG_BAUD = 115200UL;
+constexpr uint32_t SERIAL_DEBUG_BAUD = 9600UL;
 constexpr uint16_t MAX_MESSAGE_SIZE = 1024U;
 
 WiFiClient wifiClient;
@@ -26,6 +26,19 @@ Arduino_MQTT_Client mqttClient(wifiClient);
 ThingsBoard tb(mqttClient, MAX_MESSAGE_SIZE);
 
 DHT20 dht20;
+
+void processSharedAttributes(const Shared_Attribute_Data &data) {
+  for (auto it = data.begin(); it != data.end(); ++it) {
+    // Serial.print(it->value());
+    Serial.println("Received");
+  }
+}
+
+constexpr std::array<const char *, 1U> SHARED_ATTRIBUTES_LIST = {
+  "turnOn"
+};
+const Shared_Attribute_Callback attributes_callback(&processSharedAttributes, SHARED_ATTRIBUTES_LIST.cbegin(), SHARED_ATTRIBUTES_LIST.cend());
+const Attribute_Request_Callback attribute_shared_request_callback(&processSharedAttributes, SHARED_ATTRIBUTES_LIST.cbegin(), SHARED_ATTRIBUTES_LIST.cend());
 
 void InitWiFi() {
   Serial.println("Connecting to AP ...");
@@ -49,6 +62,19 @@ void CheckTBConnection() {
       Serial.println("Failed to connect");
       return;
     }
+
+    if (!tb.Shared_Attributes_Subscribe(attributes_callback)) {
+      Serial.println("Failed to subscribe for shared attribute updates");
+      return;
+    }
+    Serial.println("Subscribe done");
+
+    if (!tb.Shared_Attributes_Request(attribute_shared_request_callback)) {
+      Serial.println("Failed to request for shared attributes");
+      return;
+    }
+    Serial.println("Request done");
+
     Serial.println("Connect successfully");
   }
 }
@@ -98,6 +124,13 @@ void TaskReadAndSendTelemetryData(void *pvParameters) {
   }
 }
 
+void TaskTBLoop(void *pvParameters) {
+  while(1) {
+    tb.loop();
+    vTaskDelay(pdMS_TO_TICKS(TB_LOOP_INTERVAL_MS));
+  }
+}
+
 void setup() {
   Serial.begin(SERIAL_DEBUG_BAUD);
   delay(1000);
@@ -108,7 +141,8 @@ void setup() {
   
   xTaskCreate(TaskCheckWiFiConnection, "Check WiFi connection", 2048, NULL, 2, NULL);
   xTaskCreate(TaskCheckTBConnection, "Check Thingsboard connection", 2048, NULL, 2, NULL);
-  xTaskCreate(TaskReadAndSendTelemetryData, "Read and send telemetry data", 2048, NULL, 2, NULL);
+  xTaskCreate(TaskTBLoop, "TB Loop", 2048, NULL, 2, NULL);
+  //xTaskCreate(TaskReadAndSendTelemetryData, "Read and send telemetry data", 2048, NULL, 2, NULL);
 }
 
 void loop() {
