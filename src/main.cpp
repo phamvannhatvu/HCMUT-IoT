@@ -5,7 +5,7 @@
 #include "Wire.h"
 #include <ArduinoOTA.h>
 
-constexpr char WIFI_SSID[] = "nhatvu";
+constexpr char WIFI_SSID[] = "MSI";
 constexpr char WIFI_PASSWORD[] = "25122003";
 
 constexpr char TOKEN[] = "tvj7ij6na9cfs2kki3cy"; // IoT Device 1
@@ -13,6 +13,7 @@ constexpr char TOKEN[] = "tvj7ij6na9cfs2kki3cy"; // IoT Device 1
 constexpr char THINGSBOARD_SERVER[] = "app.coreiot.io";
 constexpr uint16_t THINGSBOARD_PORT = 1883U;
 
+constexpr uint8_t LED_PIN = 23U;
 
 constexpr uint16_t WIFI_CONNECT_CHECKING_INTERVAL_MS = 10000U;
 constexpr uint16_t TB_CONNECT_CHECKING_INTERVAL_MS = 10000U;
@@ -29,8 +30,12 @@ DHT20 dht20;
 
 void processSharedAttributes(const Shared_Attribute_Data &data) {
   for (auto it = data.begin(); it != data.end(); ++it) {
-    // Serial.print(it->value());
-    Serial.println("Received");
+    if (strcmp(it->key().c_str(), "turnOn") == 0) {
+      uint8_t ledState = it->value().as<bool>();
+      digitalWrite(LED_PIN, ledState);
+      Serial.print("LED state is set to: ");
+      Serial.println(ledState);
+    }
   }
 }
 
@@ -139,10 +144,13 @@ void setup() {
   Wire.begin();
   dht20.begin();
   
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
+
   xTaskCreate(TaskCheckWiFiConnection, "Check WiFi connection", 2048, NULL, 2, NULL);
   xTaskCreate(TaskCheckTBConnection, "Check Thingsboard connection", 2048, NULL, 2, NULL);
   xTaskCreate(TaskTBLoop, "TB Loop", 2048, NULL, 2, NULL);
-  //xTaskCreate(TaskReadAndSendTelemetryData, "Read and send telemetry data", 2048, NULL, 2, NULL);
+  xTaskCreate(TaskReadAndSendTelemetryData, "Read and send telemetry data", 2048, NULL, 2, NULL);
 }
 
 void loop() {
