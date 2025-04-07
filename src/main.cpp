@@ -4,6 +4,10 @@
 #include "DHT20.h"
 #include "Wire.h"
 #include <ArduinoOTA.h>
+#include <OTA_Firmware_Update.h>
+#include <Espressif_Updater.h>
+#include <Shared_Attribute_Update.h>
+#include <Attribute_Request.h>
 
 constexpr char WIFI_SSID[] = "MSI";
 constexpr char WIFI_PASSWORD[] = "25122003";
@@ -18,32 +22,44 @@ constexpr uint8_t LED_PIN = 23U;
 constexpr uint16_t WIFI_CONNECT_CHECKING_INTERVAL_MS = 10000U;
 constexpr uint16_t TB_CONNECT_CHECKING_INTERVAL_MS = 10000U;
 constexpr uint16_t TB_LOOP_INTERVAL_MS = 10U;
+constexpr uint16_t OTA_UPDATE_INTERVAL_MS = 100U;
 constexpr uint16_t SEND_TELEMETRY_INTERVAL_MS = 1000U;
 constexpr uint32_t SERIAL_DEBUG_BAUD = 9600UL;
 constexpr uint16_t MAX_MESSAGE_SIZE = 1024U;
 
 WiFiClient wifiClient;
 Arduino_MQTT_Client mqttClient(wifiClient);
-ThingsBoard tb(mqttClient, MAX_MESSAGE_SIZE);
-
 DHT20 dht20;
 
-void processSharedAttributes(const Shared_Attribute_Data &data) {
-  for (auto it = data.begin(); it != data.end(); ++it) {
-    if (strcmp(it->key().c_str(), "turnOn") == 0) {
-      uint8_t ledState = it->value().as<bool>();
-      digitalWrite(LED_PIN, ledState);
-      Serial.print("LED state is set to: ");
-      Serial.println(ledState);
-    }
-  }
-}
-
-constexpr std::array<const char *, 1U> SHARED_ATTRIBUTES_LIST = {
-  "turnOn"
+// Initalize the Updater client instance used to flash binary to flash memory
+Espressif_Updater<> updater;
+// Statuses for updating
+bool currentFWSent = false;
+bool updateRequestSent = false;
+// Initialize used apis
+OTA_Firmware_Update<> ota;
+constexpr uint8_t MAX_ATTRIBUTES = 2U;
+Shared_Attribute_Update<1U, MAX_ATTRIBUTES> shared_update;
+Attribute_Request<2U, MAX_ATTRIBUTES> attr_request;
+const std::array<IAPI_Implementation*, 3U> apis = {
+    &shared_update,
+    &attr_request,
+    &ota
 };
-const Shared_Attribute_Callback attributes_callback(&processSharedAttributes, SHARED_ATTRIBUTES_LIST.cbegin(), SHARED_ATTRIBUTES_LIST.cend());
-const Attribute_Request_Callback attribute_shared_request_callback(&processSharedAttributes, SHARED_ATTRIBUTES_LIST.cbegin(), SHARED_ATTRIBUTES_LIST.cend());
+// Firmware title and version used to compare with remote version, to check if an update is needed.
+// Title needs to be the same and version needs to be different --> downgrading is possible
+constexpr char CURRENT_FIRMWARE_TITLE[] = "IoT_Lab3";
+constexpr char CURRENT_FIRMWARE_VERSION[] = "0";
+// Maximum amount of retries we attempt to download each firmware chunck over MQTT
+constexpr uint8_t FIRMWARE_FAILURE_RETRIES = 12U;
+// Size of each firmware chunck downloaded over MQTT,
+// increased packet size, might increase download speed
+constexpr uint16_t FIRMWARE_PACKET_SIZE = 4096U;
+
+// Initialize ThingsBoard instance with the maximum needed buffer size
+constexpr uint16_t MAX_MESSAGE_SEND_SIZE = 512U;
+constexpr uint16_t MAX_MESSAGE_RECEIVE_SIZE = 512U;
+ThingsBoard tb(mqttClient, MAX_MESSAGE_RECEIVE_SIZE, MAX_MESSAGE_SEND_SIZE, Default_Max_Stack_Size, apis);
 
 void InitWiFi() {
   Serial.println("Connecting to AP ...");
@@ -67,18 +83,6 @@ void CheckTBConnection() {
       Serial.println("Failed to connect");
       return;
     }
-
-    if (!tb.Shared_Attributes_Subscribe(attributes_callback)) {
-      Serial.println("Failed to subscribe for shared attribute updates");
-      return;
-    }
-    Serial.println("Subscribe done");
-
-    if (!tb.Shared_Attributes_Request(attribute_shared_request_callback)) {
-      Serial.println("Failed to request for shared attributes");
-      return;
-    }
-    Serial.println("Request done");
 
     Serial.println("Connect successfully");
   }
@@ -108,10 +112,11 @@ void TaskCheckTBConnection(void *pvParameters) {
 
 void TaskReadAndSendTelemetryData(void *pvParameters) {
   while(1) {
-    dht20.read();
+    // dht20.read();
     
-    float temperature = dht20.getTemperature();
-    float humidity = dht20.getHumidity();
+    // Use virtual random sensor
+    float temperature = random(20, 40);
+    float humidity = random(50, 100);
 
     if (isnan(temperature) || isnan(humidity)) {
       Serial.println("Failed to read from DHT20 sensor!");
@@ -122,7 +127,7 @@ void TaskReadAndSendTelemetryData(void *pvParameters) {
       Serial.print(humidity);
       Serial.println(" %");
 
-      tb.sendTelemetryData("temperature", temperature);
+      // tb.sendTelemetryData("temperature", temperature);
       tb.sendTelemetryData("humidity", humidity);
     }
     vTaskDelay(pdMS_TO_TICKS(SEND_TELEMETRY_INTERVAL_MS));
@@ -133,6 +138,50 @@ void TaskTBLoop(void *pvParameters) {
   while(1) {
     tb.loop();
     vTaskDelay(pdMS_TO_TICKS(TB_LOOP_INTERVAL_MS));
+  }
+}
+
+// OTA Callbacks
+void update_starting_callback() {
+  Serial.println("Start OTA updating");
+}
+
+void finished_callback(const bool & success) {
+  if (success) {
+    Serial.println("Done, Reboot now");
+    esp_restart();
+    return;
+  }
+  Serial.println("Downloading firmware failed");
+  updateRequestSent = false;
+}
+
+void progress_callback(const size_t & current, const size_t & total) {
+  Serial.printf("Progress %.2f%%\n", static_cast<float>(current * 100U) / total);
+}
+
+void TaskOTAUpdate(void *pvParameters) {
+  while(1) {
+    if (tb.connected())
+    {
+      if (!currentFWSent) {
+        currentFWSent = ota.Firmware_Send_Info(CURRENT_FIRMWARE_TITLE, CURRENT_FIRMWARE_VERSION);
+      }
+
+      if (!updateRequestSent) {
+        Serial.print(CURRENT_FIRMWARE_TITLE);
+        Serial.println(CURRENT_FIRMWARE_VERSION);
+        Serial.println("Firwmare Update ...");
+        const OTA_Update_Callback callback(CURRENT_FIRMWARE_TITLE, CURRENT_FIRMWARE_VERSION, &updater, &finished_callback, &progress_callback, &update_starting_callback, FIRMWARE_FAILURE_RETRIES, FIRMWARE_PACKET_SIZE);
+        updateRequestSent = ota.Start_Firmware_Update(callback);
+        if(updateRequestSent) {
+          delay(500);
+          Serial.println("Firwmare Update Subscription...");
+          updateRequestSent = ota.Subscribe_Firmware_Update(callback);
+        }
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(OTA_UPDATE_INTERVAL_MS));
   }
 }
 
@@ -149,7 +198,8 @@ void setup() {
 
   xTaskCreate(TaskCheckWiFiConnection, "Check WiFi connection", 2048, NULL, 2, NULL);
   xTaskCreate(TaskCheckTBConnection, "Check Thingsboard connection", 2048, NULL, 2, NULL);
-  xTaskCreate(TaskTBLoop, "TB Loop", 2048, NULL, 2, NULL);
+  xTaskCreate(TaskTBLoop, "TB Loop", 4096, NULL, 2, NULL);
+  xTaskCreate(TaskOTAUpdate, "OTA Update", 4096, NULL, 2, NULL);
   xTaskCreate(TaskReadAndSendTelemetryData, "Read and send telemetry data", 2048, NULL, 2, NULL);
 }
 
