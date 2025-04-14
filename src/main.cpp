@@ -112,11 +112,10 @@ void TaskCheckTBConnection(void *pvParameters) {
 
 void TaskReadAndSendTelemetryData(void *pvParameters) {
   while(1) {
-    // dht20.read();
+    dht20.read();
     
-    // Use virtual random sensor
-    float temperature = random(20, 40);
-    float humidity = random(50, 100);
+    float temperature = dht20.getTemperature();
+    float humidity = dht20.getHumidity();
 
     if (isnan(temperature) || isnan(humidity)) {
       Serial.println("Failed to read from DHT20 sensor!");
